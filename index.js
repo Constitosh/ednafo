@@ -11,7 +11,7 @@ const app = express();
 // If frontend on same origin via Nginx proxy, CORS not required.
 // Otherwise, configure:
 // app.use(cors({ origin: 'https://your-frontend-domain.tld', credentials: true }));
-app.use(cors());
+app.use(cors({ origin: 'https://old-money.webflow.io/ednafo/decla', credentials: true }));
 app.use(bodyParser.json({ limit: '1mb' }));
 
 // Where we store results
