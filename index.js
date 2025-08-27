@@ -4,59 +4,65 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const bitcoinMessage = require('bitcoinjs-message');
-const bitcoin = require('bitcoinjs-lib');
 
 const app = express();
 
-// If frontend on same origin via Nginx proxy, CORS not required.
-// Otherwise, configure:
-// app.use(cors({ origin: 'https://your-frontend-domain.tld', credentials: true }));
-app.use(cors({ origin: 'https://old-money.webflow.io/ednafo/decla', credentials: true }));
+/* --- Core server hardening & config --- */
+app.set('trust proxy', true); // respect X-Forwarded-For / X-Real-IP from Nginx
+
+// CORS: frontend is hosted on Webflow at this origin (domain only, no path)
+const corsOptions = {
+  origin: 'https://old-money.webflow.io',
+  credentials: true,
+  methods: ['GET','POST','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization']
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // handle preflight for all routes
+
 app.use(bodyParser.json({ limit: '1mb' }));
 
-// Where we store results
+/* --- Data file setup --- */
 const DATA_DIR = path.join(__dirname, 'data');
 const FILE_PATH = path.join(DATA_DIR, 'submissions.jsonl');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(FILE_PATH)) fs.writeFileSync(FILE_PATH, '', 'utf8');
 
-// util: extract client IP
+/* --- Helpers --- */
 function getClientIp(req) {
-  const xf = req.headers['x-forwarded-for'];
-  if (xf) return xf.split(',')[0].trim();
+  // With trust proxy = true, req.ip is the real client IP (left-most in X-Forwarded-For)
   return req.ip;
 }
 
-// Try to verify a signed message if we have both address & signature
 function verifyBtcSignature(address, message, signature) {
   try {
-    // signature may be base64 (common) or hex; try base64 first, then hex
-    let ok = false;
+    // First try as-is (commonly base64)
     try {
-      ok = bitcoinMessage.verify(message, address, signature);
-    } catch (_) {
-      // try hex -> buffer -> base64
+      return !!bitcoinMessage.verify(message, address, signature);
+    } catch {
+      // If hex, convert to base64 and try again
       const isHex = /^[0-9a-fA-F]+$/.test(signature);
       if (isHex) {
         const buf = Buffer.from(signature, 'hex');
-        ok = bitcoinMessage.verify(message, address, buf.toString('base64'));
+        return !!bitcoinMessage.verify(message, address, buf.toString('base64'));
       }
+      return false;
     }
-    return !!ok;
-  } catch (e) {
+  } catch {
     return false;
   }
 }
 
-app.get('/health', (req, res) => {
+/* --- Routes --- */
+app.get('/health', (_req, res) => {
   res.json({ ok: true, ts: Date.now() });
 });
 
-app.post('/api/submit', async (req, res) => {
+app.post('/api/submit', (req, res) => {
   try {
     const { answers, btc, userAgent } = req.body || {};
     if (!Array.isArray(answers)) {
-      return res.status(400).send('answers must be an array');
+      return res.status(400).json({ ok: false, error: 'answers must be an array' });
     }
 
     const ip = getClientIp(req);
@@ -83,12 +89,12 @@ app.post('/api/submit', async (req, res) => {
     fs.appendFileSync(FILE_PATH, JSON.stringify(entry) + '\n', 'utf8');
     res.json({ ok: true, verified: signatureValid });
   } catch (err) {
-    console.error(err);
-    res.status(500).send('server error');
+    console.error('submit error:', err);
+    res.status(500).json({ ok: false, error: 'server error' });
   }
 });
 
-// Start server
+/* --- Start server --- */
 const PORT = process.env.PORT || 3002;
 app.listen(PORT, '0.0.0.0', () => {
   console.log('ednafo api listening on', PORT);
