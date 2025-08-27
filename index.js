@@ -18,7 +18,8 @@ const corsOptions = {
   allowedHeaders: ['Content-Type','Authorization']
 };
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // handle preflight for all routes
+app.options('/health', cors(corsOptions));
+app.options('/api/submit', cors(corsOptions));
 
 app.use(bodyParser.json({ limit: '1mb' }));
 
