@@ -1,9 +1,13 @@
+// server.js
+// Ednafo API — saves submissions and verifies BTC signatures (ECDSA + BIP-322)
+
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const bitcoinMessage = require('bitcoinjs-message');
+const { Verifier } = require('bip322-js');
 
 const app = express();
 
@@ -12,7 +16,7 @@ app.set('trust proxy', true); // respect X-Forwarded-For / X-Real-IP from Nginx
 
 // CORS: frontend is hosted on Webflow at this origin (domain only, no path)
 const corsOptions = {
-  origin: 'https://old-money.webflow.io',
+  origin: 'https://old-money.webflow.io', // <-- add more origins here if needed
   credentials: true,
   methods: ['GET','POST','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization']
@@ -21,6 +25,7 @@ app.use(cors(corsOptions));
 app.options('/health', cors(corsOptions));
 app.options('/api/submit', cors(corsOptions));
 
+// JSON body limit can be small; signatures are short
 app.use(bodyParser.json({ limit: '1mb' }));
 
 /* --- Data file setup --- */
@@ -35,23 +40,55 @@ function getClientIp(req) {
   return req.ip;
 }
 
-function verifyBtcSignature(address, message, signature) {
+function isTaproot(addr) {
+  // Mainnet Taproot bech32m addresses start with bc1p...
+  return typeof addr === 'string' && /^bc1p[0-9a-z]+$/.test(addr);
+}
+
+function verifyWithBitcoinJsMessage(address, message, signature) {
+  // Try base64 first (typical), then hex->base64 fallback
   try {
-    // First try as-is (commonly base64)
+    return !!bitcoinMessage.verify(message, address, signature);
+  } catch {
     try {
-      return !!bitcoinMessage.verify(message, address, signature);
-    } catch {
-      // If hex, convert to base64 and try again
       const isHex = /^[0-9a-fA-F]+$/.test(signature);
-      if (isHex) {
-        const buf = Buffer.from(signature, 'hex');
-        return !!bitcoinMessage.verify(message, address, buf.toString('base64'));
-      }
+      if (!isHex) return false;
+      const buf = Buffer.from(signature, 'hex');
+      return !!bitcoinMessage.verify(message, address, buf.toString('base64'));
+    } catch {
       return false;
     }
+  }
+}
+
+function verifyWithBip322(address, message, signature) {
+  try {
+    // bip322-js verifies the "simple" signature used by Xverse for Taproot
+    return Verifier.verifySignature(address, message, signature);
   } catch {
     return false;
   }
+}
+
+/**
+ * Detect protocol (or honor a provided one) and verify accordingly.
+ * Returns { ok: boolean, protocol: 'ecdsa'|'bip322'|null }
+ */
+function verifyBtcSignature(address, message, signature, declaredProtocol) {
+  const proto = declaredProtocol || (isTaproot(address) ? 'bip322' : 'ecdsa');
+
+  if (proto === 'bip322') {
+    return { ok: verifyWithBip322(address, message, signature), protocol: 'bip322' };
+  }
+
+  // default ECDSA path
+  const ok = verifyWithBitcoinJsMessage(address, message, signature);
+
+  // If ECDSA fails but the address looks Taproot, try BIP-322 as a safety net
+  if (!ok && isTaproot(address)) {
+    return { ok: verifyWithBip322(address, message, signature), protocol: 'bip322' };
+  }
+  return { ok, protocol: 'ecdsa' };
 }
 
 /* --- Routes --- */
@@ -68,9 +105,18 @@ app.post('/api/submit', (req, res) => {
 
     const ip = getClientIp(req);
     let signatureValid = null;
+    let detectedProtocol = null;
 
     if (btc?.address && btc?.signature && btc?.message) {
-      signatureValid = verifyBtcSignature(btc.address, btc.message, btc.signature);
+      const result = verifyBtcSignature(
+        btc.address,
+        btc.message,
+        btc.signature,
+        // optional front-end hint: 'ecdsa' | 'bip322'
+        btc?.protocol
+      );
+      signatureValid = result.ok;
+      detectedProtocol = result.protocol;
     }
 
     const entry = {
@@ -82,13 +128,14 @@ app.post('/api/submit', (req, res) => {
         address: btc?.address || null,
         signature: btc?.signature || null,
         message: btc?.message || null,
-        provider: btc?.provider || null,
+        provider: btc?.provider || null,    // 'xverse' | 'unisat' | 'leather' | ...
+        protocol: btc?.protocol || detectedProtocol || null, // 'ecdsa' | 'bip322'
         verified: signatureValid
       }
     };
 
     fs.appendFileSync(FILE_PATH, JSON.stringify(entry) + '\n', 'utf8');
-    res.json({ ok: true, verified: signatureValid });
+    res.json({ ok: true, verified: signatureValid, protocol: detectedProtocol });
   } catch (err) {
     console.error('submit error:', err);
     res.status(500).json({ ok: false, error: 'server error' });
