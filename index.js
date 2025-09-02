@@ -1,5 +1,6 @@
 // server.js
 // Ednafo API — saves submissions and verifies BTC signatures (ECDSA + BIP-322)
+// Also serves self-hosted static files (e.g., sats-connect UMD) at /static/*
 
 const fs = require('fs');
 const path = require('path');
@@ -24,6 +25,23 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('/health', cors(corsOptions));
 app.options('/api/submit', cors(corsOptions));
+
+/* --- Static hosting for self-hosted libs (e.g., sats-connect UMD) --- */
+const STATIC_DIR = path.join(__dirname, 'public');
+if (!fs.existsSync(STATIC_DIR)) fs.mkdirSync(STATIC_DIR, { recursive: true });
+
+// Serve /static/* from ./public (cache JS for a week)
+app.use('/static', express.static(STATIC_DIR, {
+  maxAge: '7d',
+  etag: true,
+  lastModified: true,
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.js')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      // You can tighten CSP at the reverse proxy; here we only serve the file.
+    }
+  }
+}));
 
 // JSON body limit can be small; signatures are short
 app.use(bodyParser.json({ limit: '1mb' }));
