@@ -17,7 +17,7 @@ app.set('trust proxy', true); // respect X-Forwarded-For / X-Real-IP from Nginx
 
 // CORS: frontend is hosted on Webflow at this origin (domain only, no path)
 const corsOptions = {
-  origin: 'https://oldmoney.io', // <-- add more origins here if needed
+  origin: 'https://www.oldmoney.io/ednafo/experience', // <-- add more origins here if needed
   credentials: true,
   methods: ['GET','POST','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization']
